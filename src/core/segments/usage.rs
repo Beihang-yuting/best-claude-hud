@@ -250,6 +250,11 @@ impl Segment for UsageSegment {
             });
         }
 
+        // Local build: never fall back to reading the OAuth token and calling the
+        // undocumented usage API; show nothing until Claude Code sends rate_limits.
+        if std::env::var_os("BCH_ALLOW_API_FALLBACK").is_none() {
+            return None;
+        }
         let token = credentials::get_oauth_token()?;
 
         // Load config from file to get segment options
