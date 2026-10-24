@@ -1,5 +1,5 @@
 use super::{Segment, SegmentData};
-use crate::config::{InputData, SegmentId};
+use crate::config::{AnsiColor, InputData, SegmentId};
 use crate::utils::credentials;
 use chrono::{DateTime, Datelike, Duration, Local, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,34 @@ impl UsageSegment {
             76..=87 => "\u{f0aa4}".to_string(), // circle_slice_7
             _ => "\u{f0aa5}".to_string(),       // circle_slice_8
         }
+    }
+
+    /// Plain-text circle for the 7-day window. Unlike `get_circle_icon`, these are
+    /// standard Unicode geometric shapes, so they render without a Nerd Font.
+    fn get_quarter_circle(percent: f64) -> &'static str {
+        if percent < 12.5 {
+            "○"
+        } else if percent < 37.5 {
+            "◔"
+        } else if percent < 62.5 {
+            "◑"
+        } else if percent < 87.5 {
+            "◕"
+        } else {
+            "●"
+        }
+    }
+
+    /// Bright green below 50%, bright yellow below 80%, bright red otherwise.
+    fn level_color(percent: f64) -> AnsiColor {
+        let c16 = if percent < 50.0 {
+            10
+        } else if percent < 80.0 {
+            11
+        } else {
+            9
+        };
+        AnsiColor::Color16 { c16 }
     }
 
     fn format_reset_time(reset_time_str: Option<&str>) -> String {
@@ -223,12 +251,23 @@ impl Segment for UsageSegment {
                 .as_ref()
                 .and_then(|w| w.used_percentage)
                 .unwrap_or(0.0);
-            let resets_at_epoch = rate_limits.five_hour.as_ref().and_then(|w| w.resets_at);
+            let five_hour_reset = rate_limits.five_hour.as_ref().and_then(|w| w.resets_at);
+            let seven_day_reset = rate_limits.seven_day.as_ref().and_then(|w| w.resets_at);
 
             let dynamic_icon = Self::get_circle_icon(seven_day_util / 100.0);
-            let five_hour_percent = five_hour_util.round() as u8;
-            let primary = format!("{}%", five_hour_percent);
-            let secondary = format!("· {}", Self::format_reset_time_epoch(resets_at_epoch));
+            let five_hour_percent = five_hour_util.round().clamp(0.0, 100.0) as u8;
+            let seven_day_percent = seven_day_util.round().clamp(0.0, 100.0) as u8;
+            let primary = format!(
+                "5h {}% · {}",
+                five_hour_percent,
+                Self::format_reset_time_epoch(five_hour_reset)
+            );
+            let secondary = format!(
+                " {} 7d {}% · {}",
+                Self::get_quarter_circle(seven_day_util),
+                seven_day_percent,
+                Self::format_reset_time_epoch(seven_day_reset)
+            );
 
             let mut metadata = HashMap::new();
             metadata.insert("dynamic_icon".to_string(), dynamic_icon);
@@ -245,7 +284,7 @@ impl Segment for UsageSegment {
             return Some(SegmentData {
                 primary,
                 secondary,
-                secondary_color: None,
+                secondary_color: Some(Self::level_color(seven_day_util)),
                 metadata,
             });
         }
@@ -381,10 +420,20 @@ mod tests {
         };
 
         let segment = UsageSegment::new().collect(&input).unwrap();
-        assert_eq!(segment.primary, "42%");
+        assert!(segment.primary.starts_with("5h 42% · "), "{}", segment.primary);
+        assert_eq!(segment.secondary, " ◑ 7d 61% · ?");
         assert_eq!(
             segment.metadata.get("source").map(String::as_str),
             Some("stdin_rate_limits")
         );
+    }
+
+    #[test]
+    fn quarter_circle_levels() {
+        assert_eq!(UsageSegment::get_quarter_circle(0.0), "○");
+        assert_eq!(UsageSegment::get_quarter_circle(16.0), "◔");
+        assert_eq!(UsageSegment::get_quarter_circle(50.0), "◑");
+        assert_eq!(UsageSegment::get_quarter_circle(75.0), "◕");
+        assert_eq!(UsageSegment::get_quarter_circle(100.0), "●");
     }
 }
